@@ -374,17 +374,24 @@ def _start_audio_producer(
                     file_ext = os.path.splitext(voice_name)[1].lower()
                     if file_ext == ".safetensors":
                         logger.info(f"Loading pre-exported voice embedding: {voice_name}")
-                        prompt = safetensors.torch.load_file(voice_name)["audio_prompt"]
-                        prompt = prompt.to(tts_model.device)
-                        
-                        # Manually initialize state and prompt
-                        model_state = init_states(tts_model.flow_lm, batch_size=1, sequence_length=1000)
-                        with torch.no_grad():
-                            tts_model._run_flow_lm_and_increment_step(model_state=model_state, audio_conditioning=prompt)
-                        
-                        # Optimize memory by slicing KV cache
-                        num_audio_frames = prompt.shape[1]
-                        tts_model._slice_kv_cache(model_state, num_audio_frames)
+                        loaded = safetensors.torch.load_file(voice_name)
+
+                        if "audio_prompt" in loaded:
+                            # pocket-tts-openapi format: raw audio embedding
+                            prompt = loaded["audio_prompt"].to(tts_model.device)
+                            model_state = init_states(tts_model.flow_lm, batch_size=1, sequence_length=1000)
+                            with torch.no_grad():
+                                tts_model._run_flow_lm_and_increment_step(model_state=model_state, audio_conditioning=prompt)
+                            num_audio_frames = prompt.shape[1]
+                            tts_model._slice_kv_cache(model_state, num_audio_frames)
+                        else:
+                            # pocket-tts export-voice format: pre-computed KV cache state
+                            logger.info(f"Loading pocket-tts KV cache state: {voice_name}")
+                            model_state = {}
+                            for key, tensor in loaded.items():
+                                module_name, tensor_key = key.split("/")
+                                model_state.setdefault(module_name, {})
+                                model_state[module_name][tensor_key] = tensor.to(tts_model.device)
                     else:
                         logger.info(f"Cloning voice from file: {voice_name}")
                         model_state = tts_model.get_state_for_audio_prompt(voice_name)
